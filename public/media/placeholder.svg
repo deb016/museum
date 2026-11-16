@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="640" height="480" viewBox="0 0 640 480">
+  <rect width="640" height="480" fill="#e9e3d8"/>
+  <rect x="28" y="28" width="584" height="424" rx="18" fill="#f6f1e8" stroke="#cbbfae" stroke-width="8"/>
+  <path d="M170 325l92-103 61 66 57-45 102 82H170z" fill="#b5b894"/>
+  <circle cx="414" cy="151" r="36" fill="#d2a876"/>
+  <text x="320" y="397" fill="#756856" font-family="system-ui,sans-serif" font-size="24" text-anchor="middle">Add a memory photo</text>
+</svg>

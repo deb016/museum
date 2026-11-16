@@ -1,0 +1,383 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
+    <meta name="theme-color" content="#e9e3d8" />
+    <!-- PWA metadata: manifest icons include 192px, 512px, and maskable 512px assets. -->
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="icon" type="image/png" sizes="192x192" href="/icons/icon-192.png" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Our Museum" />
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
+    <title>Our Museum</title>
+  </head>
+  <body>
+    <main id="app">
+      <div id="scene" aria-label="Interactive 3D museum"></div>
+      <div id="photo-flash" class="photo-flash" aria-hidden="true"></div>
+      <section id="title-screen" class="title-screen" aria-label="Museum welcome">
+        <div class="title-card">
+          <div id="welcome-phase">
+            <p class="eyebrow">A little place for our memories</p>
+            <h1>Happy 1st Monthsary</h1>
+            <p class="intro">A museum made from our favorite little moments.</p>
+            <button id="enter-button" class="start-button" type="button">Enter the Museum</button>
+          </div>
+          <div id="character-phase" hidden>
+            <p class="eyebrow">Choose your point of view</p>
+            <h2 class="title-subheading">Who will you explore as?</h2>
+            <div class="character-picker" role="group" aria-label="Character">
+              <button class="character-choice selected" data-character="daveRey" type="button" aria-pressed="true">
+                <span class="choice-name">Dave Rey</span>
+                <span class="choice-detail">Curious explorer</span>
+              </button>
+              <button class="character-choice" data-character="resha" type="button" aria-pressed="false">
+                <span class="choice-name">Resha</span>
+                <span class="choice-detail">Memory keeper</span>
+              </button>
+            </div>
+            <button id="start-button" class="start-button" type="button">Continue</button>
+          </div>
+        </div>
+      </section>
+      <section id="loading-screen" class="loading-screen" hidden role="status" aria-live="polite">
+        <div class="loading-card">
+          <span class="loading-heart" aria-hidden="true">♡</span>
+          <p class="eyebrow">Preparing our museum</p>
+          <p id="loading-message">Polishing the frames...</p>
+        </div>
+      </section>
+      <div id="top-center-hud" class="top-center-hud" aria-live="polite">
+        <aside id="room-title-card" class="room-title-card" hidden>
+          <span id="room-title-kicker" class="room-title-kicker">Now visiting</span>
+          <span id="room-title-text"></span>
+        </aside>
+        <button id="photo-thumbnail" class="photo-thumbnail" type="button" aria-label="Share or save the latest photo" hidden>
+          <img alt="Latest museum photo" />
+        </button>
+        <p id="photo-status" class="photo-status" role="status" aria-live="polite" hidden></p>
+        <aside id="fps-counter" class="fps-counter" hidden aria-label="Frames per second"></aside>
+      </div>
+      <aside id="minimap" class="minimap-shell" aria-label="Museum map" hidden>
+        <canvas id="minimap-canvas" width="220" height="220" aria-label="Map showing both players"></canvas>
+      </aside>
+      <aside id="heart-direction-hint" class="heart-direction-hint" hidden role="status" aria-live="polite">
+        <span class="heart-direction-arrow" aria-hidden="true">↑</span>
+        <span>Unfound heart</span>
+      </aside>
+      <div id="travel-fade" class="travel-fade" aria-hidden="true" hidden></div>
+      <div id="controls-hint" class="controls-hint" hidden>
+        <span class="desktop-hint">WASD / arrows to move · mouse to look · Shift to run</span>
+        <span class="mobile-hint">Left stick to move · drag right side to look</span>
+      </div>
+      <pre id="network-debug" class="network-debug" hidden></pre>
+      <aside id="lighting-debug" class="lighting-debug" hidden aria-label="Lighting quality and effects">
+        <div class="debug-choice-row">
+          <span>Quality</span>
+          <div id="lighting-quality" class="setting-segmented debug-segmented" role="group" aria-label="Lighting quality">
+            <button type="button" data-value="Low">Low</button>
+            <button type="button" data-value="Medium">Medium</button>
+            <button type="button" data-value="High">High</button>
+            <button type="button" data-value="Cinematic">Cinematic</button>
+          </div>
+        </div>
+        <output id="lighting-fps">FPS --</output>
+        <div id="lighting-effect-toggles"></div>
+      </aside>
+      <aside id="layout-debug" class="layout-debug" hidden aria-label="Museum layout map">
+        <h2>Room & archway layout</h2>
+        <canvas id="layout-canvas" width="640" height="520" aria-label="Top-down museum room and archway map"></canvas>
+      </aside>
+      <div id="lighting-grade" class="lighting-grade" aria-hidden="true"></div>
+      <label id="sit-debug-controls" class="sit-debug-controls" hidden for="sit-debug-blend">
+        Sit blend <input id="sit-debug-blend" type="range" min="0" max="1" step="0.01" value="0" />
+        <output id="sit-debug-value">0.00</output>
+      </label>
+      <!-- Corner groups keep 56px hit targets; the layout mirrors the groups for left-handed play. -->
+      <div id="hud" class="hud" hidden>
+        <div class="hud-corner hud-corner-left">
+          <button id="chat-toggle" class="hud-icon-button" type="button" aria-expanded="false" aria-controls="chat-panel" aria-label="Open chat">
+            <svg class="hud-icon" aria-hidden="true" viewBox="0 0 24 24"><path d="M20 11.5a7.5 7.5 0 0 1-7.5 7.5 8.6 8.6 0 0 1-3.1-.58L4 20l1.58-4.05A7.5 7.5 0 1 1 20 11.5Z"/><path d="M8.5 11.5h.01M12 11.5h.01M15.5 11.5h.01"/></svg>
+            <span id="chat-unread" class="chat-unread" hidden>0</span>
+          </button>
+          <button id="fullscreen-button" class="hud-icon-button" type="button" aria-label="Enter fullscreen">
+            <svg class="hud-icon" aria-hidden="true" viewBox="0 0 24 24"><path d="M8 3H3v5M16 3h5v5M21 16v5h-5M8 21H3v-5"/></svg>
+          </button>
+        </div>
+        <div class="hud-corner hud-corner-right">
+          <div class="quick-button-row">
+            <button id="memories-toggle" class="hud-icon-button hud-quick-button" type="button" aria-expanded="false" aria-controls="memory-travel" aria-label="Memories">
+              <svg class="hud-icon" aria-hidden="true" viewBox="0 0 24 24"><path d="M12 21s7-6.1 7-12a7 7 0 1 0-14 0c0 5.9 7 12 7 12Z"/><circle cx="12" cy="9" r="2.2"/></svg><span class="quick-button-label">Memories</span>
+            </button>
+            <button id="couple-toggle" class="hud-icon-button hud-quick-button" type="button" aria-expanded="false" aria-controls="couple-panel" aria-label="Together">
+              <svg class="hud-icon" aria-hidden="true" viewBox="0 0 24 24"><path d="M12 20s-7-4.1-7-9a4 4 0 0 1 7-2.6A4 4 0 0 1 19 11c0 4.9-7 9-7 9Z"/><path d="M5 6.5a3.6 3.6 0 0 0-2 3.3c0 1.4.7 2.8 1.8 4.1"/></svg><span class="quick-button-label">Together</span>
+            </button>
+            <button id="photo-mode-button" class="hud-icon-button hud-quick-button" type="button" aria-label="Take photo">
+              <svg class="hud-icon" aria-hidden="true" viewBox="0 0 24 24"><path d="M4 7h3l1.5-2h7L17 7h3v12H4Z"/><circle cx="12" cy="13" r="3.5"/></svg><span class="quick-button-label">Photo mode</span>
+            </button>
+          </div>
+          <button id="settings-button" class="hud-icon-button" type="button" aria-expanded="false" aria-controls="settings-sheet" aria-label="Open settings">
+            <svg class="hud-icon" aria-hidden="true" viewBox="0 0 24 24"><path d="m10 2-.5 2.1a8.2 8.2 0 0 0-1.6.9L5.8 4.2 3.8 7.7l1.6 1.5a8.5 8.5 0 0 0 0 1.8l-1.6 1.5 2 3.5 2.1-.8a8.2 8.2 0 0 0 1.6.9L10 18h4l.5-2.1a8.2 8.2 0 0 0 1.6-.9l2.1.8 2-3.5-1.6-1.5a8.5 8.5 0 0 0 0-1.8l1.6-1.5-2-3.5-2.1.8a8.2 8.2 0 0 0-1.6-.9L14 2Z" transform="translate(0 2) scale(.92)"/><circle cx="12" cy="12" r="3"/></svg>
+          </button>
+        </div>
+      </div>
+      <button id="panel-scrim" class="panel-scrim" type="button" aria-label="Close open panel" hidden></button>
+      <section id="orientation-overlay" class="orientation-overlay" hidden role="alertdialog" aria-modal="true" aria-labelledby="orientation-title" aria-describedby="orientation-description">
+        <div class="orientation-card">
+          <svg class="orientation-phone" aria-hidden="true" viewBox="0 0 84 84">
+            <rect x="27" y="12" width="30" height="58" rx="5" />
+            <path d="M37 18h10M40 63h4" />
+          </svg>
+          <h2 id="orientation-title">Rotate your phone to play</h2>
+          <p id="orientation-description">This museum is best explored in landscape</p>
+        </div>
+      </section>
+      <aside id="fullscreen-tip" class="fullscreen-tip" role="note" hidden>
+        <span>Tap the fullscreen button for the best experience.</span>
+        <button id="fullscreen-tip-dismiss" type="button" aria-label="Dismiss fullscreen tip">×</button>
+      </aside>
+      <section id="settings-sheet" class="settings-sheet" role="dialog" aria-modal="false" aria-labelledby="settings-title" hidden>
+        <header class="settings-header">
+          <div>
+            <p class="eyebrow">Your museum, your way</p>
+            <h2 id="settings-title">Settings</h2>
+          </div>
+          <button id="settings-close" class="settings-close" type="button" aria-label="Close settings">×</button>
+        </header>
+        <div class="settings-scroll">
+          <details class="settings-section" open>
+            <summary>Controls</summary>
+            <label class="setting-row">Camera sensitivity X <input type="range" min="0.3" max="2.5" step="0.1" data-setting="controls.cameraSensitivityX" /><output></output></label>
+            <label class="setting-row">Camera sensitivity Y <input type="range" min="0.3" max="2.5" step="0.1" data-setting="controls.cameraSensitivityY" /><output></output></label>
+            <label class="setting-row">Joystick sensitivity <input type="range" min="0.3" max="2.5" step="0.1" data-setting="controls.joystickSensitivity" /><output></output></label>
+            <label class="setting-row">Deadzone <input type="range" min="0" max="0.4" step="0.01" data-setting="controls.deadzone" /><output></output></label>
+            <div class="setting-row setting-choice-row"><span>Joystick mode</span>
+              <div class="setting-segmented" role="group" aria-label="Joystick mode" data-setting="controls.joystickMode">
+                <button type="button" data-value="Fixed">Fixed</button><button type="button" data-value="Floating">Floating</button>
+              </div>
+            </div>
+            <div class="setting-row setting-choice-row"><span>Run mode</span>
+              <div class="setting-segmented" role="group" aria-label="Run mode" data-setting="controls.runMode">
+                <button type="button" data-value="Edge-auto">Edge-auto</button><button type="button" data-value="Hold">Hold</button><button type="button" data-value="Toggle">Toggle</button>
+              </div>
+            </div>
+            <label class="setting-row">Invert camera Y <input type="checkbox" data-setting="controls.invertY" /></label>
+            <label class="setting-row">Left-handed mode <input type="checkbox" data-setting="controls.leftHanded" /></label>
+            <label class="setting-row">Show button labels <input type="checkbox" data-setting="controls.showButtonLabels" /></label>
+            <label class="setting-row">Button size <input type="range" min="0.8" max="1.25" step="0.05" data-setting="controls.buttonSize" /><output></output></label>
+            <label class="setting-row">Button opacity <input type="range" min="0.35" max="0.85" step="0.05" data-setting="controls.buttonOpacity" /><output></output></label>
+            <label class="setting-row">Haptics <input type="checkbox" data-setting="controls.haptics" /></label>
+            <div class="settings-button-row">
+              <button id="edit-controls-button" class="settings-action" type="button">Edit controls</button>
+              <button id="reset-layout-button" class="settings-action secondary" type="button">Reset layout</button>
+            </div>
+          </details>
+          <details class="settings-section">
+            <summary>Camera</summary>
+            <div class="setting-row setting-choice-row"><span>View mode</span>
+              <div class="setting-segmented" role="group" aria-label="View mode" data-setting="camera.mode">
+                <button type="button" data-value="Third person">Third person</button><button type="button" data-value="First person">First person</button>
+              </div>
+            </div>
+            <label class="setting-row">Smoothing <input type="range" min="1" max="15" step="0.5" data-setting="camera.smoothing" /><output></output></label>
+            <label class="setting-row">Auto pull-back near large frames <input type="checkbox" data-setting="camera.autoPullBack" /></label>
+            <fieldset class="camera-orientation-settings">
+              <legend>Portrait camera</legend>
+              <label class="setting-row">Height <input type="range" min="0.8" max="3.5" step="0.1" data-setting="camera.portrait.height" /><output></output></label>
+              <label class="setting-row">Distance <input type="range" min="1.5" max="9" step="0.1" data-setting="camera.portrait.distance" /><output></output></label>
+              <label class="setting-row">Field of view <input type="range" min="30" max="80" step="1" data-setting="camera.portrait.fov" /><output></output></label>
+            </fieldset>
+            <fieldset class="camera-orientation-settings">
+              <legend>Landscape camera</legend>
+              <label class="setting-row">Height <input type="range" min="0.8" max="3.5" step="0.1" data-setting="camera.landscape.height" /><output></output></label>
+              <label class="setting-row">Distance <input type="range" min="1.5" max="9" step="0.1" data-setting="camera.landscape.distance" /><output></output></label>
+              <label class="setting-row">Field of view <input type="range" min="30" max="80" step="1" data-setting="camera.landscape.fov" /><output></output></label>
+            </fieldset>
+            <button id="reset-camera-button" class="settings-action secondary" type="button">Reset camera</button>
+          </details>
+          <details class="settings-section">
+            <summary>Graphics</summary>
+            <div class="setting-row setting-choice-row"><span>Quality preset</span>
+              <div class="setting-segmented" role="group" aria-label="Quality preset" data-setting="graphics.preset">
+                <button type="button" data-value="Auto">Auto</button><button type="button" data-value="Low">Low</button><button type="button" data-value="Medium">Medium</button><button type="button" data-value="High">High</button><button type="button" data-value="Cinematic">Cinematic</button>
+              </div>
+            </div>
+            <p id="recommended-quality" class="settings-note">Recommended for your phone</p>
+            <label class="setting-row">Bloom <input type="checkbox" data-setting="graphics.bloom" /></label>
+            <label class="setting-row">Film grain <input type="checkbox" data-setting="graphics.filmGrain" /></label>
+            <label class="setting-row">Vignette <input type="checkbox" data-setting="graphics.vignette" /></label>
+            <label class="setting-row">Light shafts <input type="checkbox" data-setting="graphics.lightShafts" /></label>
+            <label class="setting-row">Dust <input type="checkbox" data-setting="graphics.dust" /></label>
+            <label class="setting-row">Floor reflections <input type="checkbox" data-setting="graphics.floorReflections" /></label>
+            <label class="setting-row">Shadows <input type="checkbox" data-setting="graphics.shadows" /></label>
+            <label class="setting-row">Render scale <input type="range" min="0.5" max="1" step="0.05" data-setting="graphics.renderScale" /><output></output></label>
+            <div class="setting-row setting-choice-row"><span>FPS cap</span>
+              <div class="setting-segmented" role="group" aria-label="FPS cap" data-setting="graphics.fpsCap">
+                <button type="button" data-value="30" data-value-type="number">30</button><button type="button" data-value="60" data-value-type="number">60</button>
+              </div>
+            </div>
+            <label class="setting-row">Battery saver <input type="checkbox" data-setting="graphics.batterySaver" /></label>
+            <label class="setting-row">FPS counter <input type="checkbox" data-setting="graphics.fpsCounter" /></label>
+          </details>
+          <details class="settings-section">
+            <summary>Music</summary>
+            <p id="music-status" class="settings-note" role="status">Loading playlist…</p>
+            <p id="music-track-title" class="music-track-title">No song selected</p>
+            <div id="music-progress" class="music-progress" role="progressbar" aria-label="Track progress" aria-valuemin="0" aria-valuemax="1" aria-valuenow="0">
+              <span id="music-progress-fill"></span>
+            </div>
+            <p id="music-time" class="music-time">0:00 / 0:00</p>
+            <div class="music-transport" role="group" aria-label="Music playback controls">
+              <button id="music-previous" class="settings-action secondary" type="button" aria-label="Previous song">Previous</button>
+              <button id="music-play" class="settings-action" type="button" aria-label="Play">Play</button>
+              <button id="music-next" class="settings-action secondary" type="button" aria-label="Next song">Next</button>
+            </div>
+            <div class="music-options" role="group" aria-label="Music options">
+              <button id="music-shuffle" class="settings-action secondary" type="button" aria-pressed="false">Shuffle off</button>
+              <button id="music-repeat" class="settings-action secondary" type="button" aria-pressed="true">Repeat all</button>
+            </div>
+          </details>
+          <details class="settings-section">
+            <summary>Sound</summary>
+            <label class="setting-row">Master volume <input id="master-volume" type="range" min="0" max="1" step="0.05" data-setting="sound.masterVolume" aria-label="Master volume" /><output></output></label>
+            <label class="setting-row">Music and song volume <input type="range" min="0" max="1" step="0.05" data-setting="sound.music" /><output></output></label>
+            <label class="setting-row">Effects <input type="range" min="0" max="1" step="0.05" data-setting="sound.effects" /><output></output></label>
+            <label class="setting-row">Ambient effects <input type="range" min="0" max="1" step="0.05" data-setting="sound.ambient" /><output></output></label>
+            <label class="setting-row">Voice / chat <input type="range" min="0" max="1" step="0.05" data-setting="sound.voice" /><output></output></label>
+            <label class="setting-row">Mute all <input id="music-toggle" type="checkbox" data-setting="sound.muteAll" /></label>
+          </details>
+          <details class="settings-section">
+            <summary>Online</summary>
+            <p id="settings-room-code" class="settings-note"></p>
+            <p id="partner-status" class="settings-note" role="status">Partner offline</p>
+            <p id="online-status" class="online-status" role="status" aria-live="polite">Ready to explore solo</p>
+            <div class="online-actions">
+              <button id="invite-copy" class="settings-action" type="button">Copy invite link</button>
+              <button id="invite-share" class="settings-action" type="button" hidden>Share</button>
+              <button id="online-retry" class="settings-action secondary" type="button" hidden>Try again</button>
+              <button id="update-reload" class="settings-action update-action" type="button" hidden>
+                Update available · reload
+              </button>
+            </div>
+            <p id="invite-feedback" class="invite-feedback" role="status" aria-live="polite"></p>
+          </details>
+          <details id="display-settings-section" class="settings-section">
+            <summary>Display</summary>
+            <button id="settings-fullscreen-button" class="settings-action" type="button">Fullscreen</button>
+            <button id="install-app-button" class="settings-action" type="button" hidden>Install app</button>
+            <p id="install-app-status" class="settings-note" role="status" hidden></p>
+            <div id="ios-install-help" class="ios-install-help" role="note" hidden>
+              Tap Share, then Add to Home Screen, then open it from your home screen for full screen.
+            </div>
+            <label class="setting-row">Keep screen on <input type="checkbox" data-setting="display.keepScreenOn" /></label>
+            <label class="setting-row">Reduced motion <input type="checkbox" data-setting="display.reducedMotion" /></label>
+            <label class="setting-row">Large text <input type="checkbox" data-setting="display.largeText" /></label>
+            <label class="setting-row">Show mini-map <input type="checkbox" data-setting="display.showMinimap" /></label>
+          </details>
+          <details class="settings-section">
+            <summary>Museum and help</summary>
+            <p id="heart-counter" class="settings-note">Hearts 0 / 5</p>
+            <button id="guide-toggle" class="settings-action" type="button" aria-pressed="false">Guide path</button>
+            <p class="settings-note">Move: drag the left stick · Look: drag the free side · Interact: tap the large action button · Run: push the stick to its edge.</p>
+            <p class="settings-note">Add to Home Screen: open the browser menu and choose “Add to Home screen” (Android), or Share → “Add to Home Screen” (iPhone).</p>
+            <button id="reset-settings-button" class="settings-action secondary" type="button">Reset all settings</button>
+          </details>
+        </div>
+      </section>
+      <!-- Rooms and travel destinations are generated from museum.config.js. -->
+      <section id="memory-travel" class="memory-travel" role="dialog" aria-label="Memories fast travel" hidden>
+        <header id="memories-drag-handle" class="memory-travel-header">
+          <h2>Memories</h2>
+          <button id="memories-close" type="button" aria-label="Close memories">×</button>
+        </header>
+        <div id="memory-rooms" class="memory-list memory-room-grid" aria-label="Museum rooms"></div>
+        <p id="memory-status" role="status"></p>
+      </section>
+      <section id="couple-panel" class="couple-panel" role="dialog" aria-label="Couple interactions" hidden>
+        <header class="compact-panel-header">
+          <p class="eyebrow">Together</p>
+          <button id="couple-panel-close" class="compact-panel-close" type="button" aria-label="Close Together panel">×</button>
+        </header>
+        <div class="couple-actions" role="group" aria-label="Available couple interactions">
+          <button class="couple-action" data-action="hold" type="button">Hold hands</button>
+          <button class="couple-action" data-action="hug" type="button">Hug</button>
+          <button class="couple-action" data-action="kissCheek" type="button">Cheek kiss</button>
+          <button class="couple-action" data-action="kissForehead" type="button">Forehead kiss</button>
+          <button class="couple-action" data-action="piggyback" type="button">Piggyback</button>
+          <button class="couple-action" data-action="slowDance" type="button">Slow dance</button>
+          <button class="couple-action" data-action="happyDance" type="button">Happy dance</button>
+        </div>
+        <label class="couple-hold-option"><input id="couple-hold-mode" type="checkbox" /> Hold hug until Stop</label>
+        <p id="couple-hint" class="couple-hint" role="status"></p>
+      </section>
+      <section id="couple-request" class="couple-request" role="dialog" aria-label="Couple interaction request" hidden>
+        <p id="couple-request-text"></p>
+        <div>
+          <button id="couple-accept" class="couple-action" type="button">Accept</button>
+          <button id="couple-decline" class="couple-action secondary" type="button">Decline</button>
+        </div>
+      </section>
+      <button id="couple-stop" class="couple-stop" type="button" hidden>Stop / Let go</button>
+      <div id="mobile-controls" class="mobile-controls" hidden>
+        <div id="joystick-zone" class="joystick-zone">
+          <div id="joystick" class="joystick" role="application" aria-label="Movement joystick">
+            <div class="joystick-deadzone" aria-hidden="true"></div>
+            <div class="joystick-knob"></div>
+          </div>
+        </div>
+        <div id="action-cluster" class="action-cluster" aria-label="Action buttons">
+          <button id="run-button" class="action-control run-button" type="button" aria-pressed="false">Run</button>
+          <button id="couple-action-button" class="action-control heart-action-button" type="button" aria-label="Couple interactions">♡</button>
+          <button id="interaction-button" class="action-control interaction-button" type="button" hidden>Interact</button>
+        </div>
+      </div>
+      <div id="seat-actions" class="seat-actions" role="group" aria-label="Available seats" hidden></div>
+      <section id="chat-panel" class="chat-panel" role="dialog" aria-label="In-world chat" hidden>
+        <header class="chat-header">
+          <div>
+            <p class="eyebrow">Together in the museum</p>
+            <h2>Chat</h2>
+          </div>
+          <button id="chat-close" class="chat-close" type="button" aria-label="Close chat">×</button>
+        </header>
+        <ol id="chat-history" class="chat-history" aria-live="polite" aria-relevant="additions"></ol>
+        <div id="emoji-picker" class="emoji-picker" role="group" aria-label="Emoji picker" hidden>
+          <div id="chat-emoji-options" class="chat-emoji-options"></div>
+          <div id="chat-emote-buttons" class="chat-emotes" role="group" aria-label="Emotes"></div>
+        </div>
+        <p id="chat-status" class="chat-status" role="status" aria-live="polite"></p>
+        <div class="chat-compose">
+          <button id="emoji-toggle" class="emoji-toggle" type="button" aria-expanded="false" aria-controls="emoji-picker" aria-label="Choose emoji">☺</button>
+          <form id="chat-form" class="chat-form">
+            <label class="sr-only" for="chat-input">Message</label>
+            <input id="chat-input" type="text" maxlength="300" inputmode="text" autocomplete="off" autocapitalize="sentences" enterkeyhint="send" placeholder="Type a message..." />
+            <button type="submit" class="chat-send" aria-label="Send message" disabled>
+              <svg class="chat-send-icon" aria-hidden="true" viewBox="0 0 24 24"><path d="m3 11 18-8-8 18-2.5-7.5L3 11Z"/><path d="M10.5 13.5 21 3"/></svg>
+              <span class="sr-only">Send</span>
+            </button>
+          </form>
+        </div>
+      </section>
+      <div id="speech-layer" class="speech-layer" aria-live="polite"></div>
+      <section id="guestbook" class="overlay guestbook-overlay" role="dialog" aria-modal="true" aria-labelledby="guestbook-title" hidden>
+        <div class="guestbook-card">
+          <button id="guestbook-close" class="overlay-close" type="button" aria-label="Close guestbook">×</button>
+          <p class="eyebrow">Leave a little note</p>
+          <h2 id="guestbook-title">Our Guestbook</h2>
+          <form id="guestbook-form">
+            <label for="guestbook-message">Your message</label>
+            <textarea id="guestbook-message" maxlength="400" required placeholder="Write something for us to remember..."></textarea>
+            <button class="start-button" type="submit">Add to the guestbook</button>
+            <p id="guestbook-status" class="guestbook-status" role="status"></p>
+          </form>
+          <div id="guestbook-entries" class="guestbook-entries" aria-live="polite"></div>
+        </div>
+      </section>
+      <aside id="render-debug" class="render-debug" hidden aria-label="Render diagnostics"></aside>
+    </main>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>

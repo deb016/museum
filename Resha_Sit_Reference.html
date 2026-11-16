@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Resha – Hair and Sit Reference</title>
+<style>
+:root{--bg:#f3e9dc;--ink:#3b2a2f;--card:rgba(255,255,255,.85);--acc:#c9607a;color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#241c20;--ink:#f6e8ec;--card:rgba(50,36,44,.85);--acc:#f08aa2;color-scheme:dark}}
+:root[data-theme="dark"]{--bg:#241c20;--ink:#f6e8ec;--card:rgba(50,36,44,.85);--acc:#f08aa2;color-scheme:dark}
+html,body{height:100%;margin:0;overflow:hidden;background:var(--bg);color:var(--ink);font-family:system-ui,-apple-system,Segoe UI,sans-serif;touch-action:none}
+canvas{position:fixed;inset:0;width:100%;height:100%}
+#hud{position:fixed;left:10px;top:calc(env(safe-area-inset-top,0px) + 8px);font:12px/1.5 ui-monospace,Menlo,monospace;background:var(--card);padding:8px 10px;border-radius:10px;max-width:70vw}
+#bar{position:fixed;left:0;right:0;bottom:env(safe-area-inset-bottom,0px);display:flex;flex-wrap:wrap;gap:8px;justify-content:center;align-items:center;padding:12px}
+button{font:inherit;border:0;border-radius:999px;padding:11px 16px;min-height:44px;background:var(--card);color:var(--ink);cursor:pointer}
+button.p{background:var(--acc);color:#fff}
+input[type=range]{width:140px}
+</style>
+</head>
+<body>
+<div id="hud"></div>
+<div id="bar">
+<button class="p" id="bSit">Sit</button><button id="bStand">Stand</button>
+<button data-v="3q">3/4</button><button data-v="side">Side</button><button data-v="front">Front</button><button data-v="back">Back</button>
+<label>blend <input id="sl" type="range" min="0" max="1" step="0.01" value="0"></label>
+</div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+/* ===== Reference implementation: Resha's hair + single-mesh skirt with a sit blend =====
+   Units: 1 = about 1 metre-ish. Character faces +Z. Local origin is at the floor, centered under the pelvis. */
+const SEAT_TOP=.46, SLOT_Z=-.05, HIP_Y=.92, STAND_Z=.62;
+const SIT_DY=SEAT_TOP+.06-HIP_Y;           // lowers the whole body so the pelvis rests on the seat
+const THIGH=.46, SHIN=.44;
+
+const M=(c,r,ds)=>new THREE.MeshStandardMaterial({color:c,roughness:r==null?.7:r,side:ds?THREE.DoubleSide:THREE.FrontSide});
+const mesh=(g,m,p,par)=>{const o=new THREE.Mesh(g,m);if(p)o.position.set(p[0],p[1],p[2]);if(par)par.add(o);return o};
+const piv=(par,x,y,z)=>{const g=new THREE.Group();g.position.set(x,y,z||0);par.add(g);return g};
+
+/* ---------- floral texture (the dots live ON the fabric via UVs, never as loose spheres) ---------- */
+function floralTex(){
+  const c=document.createElement('canvas');c.width=c.height=256;const x=c.getContext('2d');
+  x.fillStyle='#f4eddb';x.fillRect(0,0,256,256);
+  for(let i=0;i<22;i++){const px=Math.random()*256,py=Math.random()*256;x.save();x.translate(px,py);
+    for(let k=0;k<5;k++){x.rotate(Math.PI*2/5);x.fillStyle='rgba(143,154,98,.85)';x.beginPath();x.ellipse(0,5,2.6,5.5,0,0,7);x.fill()}
+    x.fillStyle='rgba(120,128,80,.9)';x.beginPath();x.arc(0,0,2,0,7);x.fill();x.restore()}
+  const t=new THREE.CanvasTexture(c);t.wrapS=t.wrapT=THREE.RepeatWrapping;t.repeat.set(4,3);return t}
+
+/* ---------- ONE continuous skirt mesh with two key shapes (A = standing bell, B = seated drape) ---------- */
+const SEG=32, ROWS=36;
+const lerpKeys=(k,t)=>{for(let i=1;i<k.length;i++)if(t<=k[i][0]){const a=k[i-1],b=k[i],f=(t-a[0])/(b[0]-a[0]);return[a[1]+(b[1]-a[1])*f,a[2]+(b[2]-a[2])*f]}return[k[k.length-1][1],k[k.length-1][2]]};
+const bulge=t=>{const f=(t*3)%1;return .035*Math.sin(f*Math.PI)};          // three ruffle tiers
+const KEYS_B=[[0,.148,.148],[.15,.19,.17],[.3,.23,.12],[.5,.25,.088],[.63,.26,.09],[.72,.27,.15],[1,.30,.16]]; // [t, rx(side), ry(thickness)]
+function curveA(){return new THREE.LineCurve3(new THREE.Vector3(0,1.24,0),new THREE.Vector3(0,.36,0))}
+function curveB(){return new THREE.CatmullRomCurve3([[1.24,0],[1.10,0],[1.0,.02],[.96,.12],[.955,.3],[.97,.44],[.86,.54],[.76,.57],[.6,.57]].map(p=>new THREE.Vector3(0,p[0],p[1])),false,'centripetal')}
+function ringSet(curve,radii,seatClamp){
+  const out=new Float32Array((ROWS+1)*(SEG+1)*3),side=new THREE.Vector3(1,0,0);let n=0;
+  for(let i=0;i<=ROWS;i++){const t=i/ROWS,p=curve.getPointAt(t),T=curve.getTangentAt(t).normalize(),u=new THREE.Vector3().crossVectors(T,side).normalize(),[rx,ry]=radii(t);
+    for(let j=0;j<=SEG;j++){const a=j/SEG*Math.PI*2;let x=p.x+Math.cos(a)*rx,y=p.y+Math.sin(a)*ry*u.y,z=p.z+Math.sin(a)*ry*u.z;
+      if(seatClamp&&z>-.30&&z<.30&&y<1.0)y=Math.max(y,SEAT_TOP+.4+.01); // never sink into the seat (local y of seat top = .86)
+      out[n++]=x;out[n++]=y;out[n++]=z}}
+  return out}
+function buildSkirt(){
+  const A=ringSet(curveA(),t=>{const r=.148+.36*t+bulge(t);return[r,r]},false);
+  const B=ringSet(curveB(),t=>{const [rx,ry]=lerpKeys(KEYS_B,t),b=bulge(t);return[rx+b,ry+b*.6]},true);
+  const g=new THREE.BufferGeometry(),pos=new Float32Array(A.length),uv=new Float32Array((ROWS+1)*(SEG+1)*2),idx=[];
+  for(let i=0,n=0;i<=ROWS;i++)for(let j=0;j<=SEG;j++){uv[n++]=j/SEG;uv[n++]=i/ROWS}
+  for(let i=0;i<ROWS;i++)for(let j=0;j<SEG;j++){const a=i*(SEG+1)+j,b=a+SEG+1;idx.push(a,b,a+1,b,b+1,a+1)}
+  g.setAttribute('position',new THREE.BufferAttribute(pos,3));g.setAttribute('uv',new THREE.BufferAttribute(uv,2));g.setIndex(idx);
+  const mat=new THREE.MeshStandardMaterial({map:floralTex(),roughness:.55,side:THREE.DoubleSide});
+  const m=new THREE.Mesh(g,mat);m.userData={A,B,pos};
+  m.setBlend=function(k){const d=this.userData,P=d.pos;for(let i=0;i<P.length;i++)P[i]=d.A[i]+(d.B[i]-d.A[i])*k;
+    g.attributes.position.needsUpdate=true;g.computeVertexNormals();
+    const N=g.attributes.normal;for(let i=0;i<=ROWS;i++){const a=i*(SEG+1),b=a+SEG; // WELD the seam so there is no vertical shading line
+      const x=N.getX(a)+N.getX(b),y=N.getY(a)+N.getY(b),z=N.getZ(a)+N.getZ(b),l=Math.hypot(x,y,z)||1;N.setXYZ(a,x/l,y/l,z/l);N.setXYZ(b,x/l,y/l,z/l)}
+    N.needsUpdate=true};
+  m.setBlend(0);return m}
+
+/* ---------- Resha ---------- */
+function buildResha(){
+  const root=new THREE.Group(),cream=M(0xf4eddb,.6),skin=M(0xd9a883),hairM=M(0x15100d,.55,true),shoeM=M(0xe8dcc4,.4),dark=M(0x1a1210);
+  // torso: cream bodice (own material, never the hair material) + ruched neckline + neck
+  mesh(new THREE.CylinderGeometry(.17,.15,.38,24),cream,[0,1.38,0],root);
+  const ring=mesh(new THREE.TorusGeometry(.17,.035,8,24),cream,[0,1.58,0],root);ring.rotation.x=Math.PI/2;
+  mesh(new THREE.CylinderGeometry(.045,.05,.1,12),skin,[0,1.66,0],root);
+  const skirt=buildSkirt();root.add(skirt);
+  // head + face (face on +Z)
+  const head=piv(root,0,1.8,0);mesh(new THREE.SphereGeometry(.14,24,18),skin,[0,0,0],head);
+  mesh(new THREE.SphereGeometry(.018,8,8),dark,[-.05,.02,.13],head);mesh(new THREE.SphereGeometry(.018,8,8),dark,[.05,.02,.13],head);
+  mesh(new THREE.BoxGeometry(.05,.012,.01),M(0xb06a5a),[0,-.06,.133],head);
+  // HAIR: every part is parented to the head pivot and follows the reference file's girl()
+  const hair=piv(head,0,0,0);
+  mesh(new THREE.SphereGeometry(.156,32,20,0,6.283,0,1.2),hairM,[0,.005,-.01],hair);                                   // crown dome (covers the scalp)
+  mesh(new THREE.SphereGeometry(.153,32,20,Math.PI*.9,Math.PI*1.4,0,2.5),hairM,[0,0,-.005],hair);                      // back + sides dome
+  mesh(new THREE.CylinderGeometry(.15,.2,.7,32,1,true,Math.PI*.3,Math.PI*1.4),hairM,[0,-.28,-.05],hair);               // long curved shell, open at the FRONT
+  [-1,1].forEach(s=>{
+    const st=mesh(new THREE.CylinderGeometry(.045,.03,.56,12),hairM,[s*.145,-.27,.075],hair);st.scale.z=.55;st.rotation.z=s*.05; // face-framing strands
+    mesh(new THREE.SphereGeometry(.032,10,10),hairM,[s*.158,-.56,.082],hair).scale.set(1,1,.6);
+    mesh(new THREE.SphereGeometry(.05,12,10),hairM,[s*.125,.06,.07],hair).scale.set(1,1.1,.7)});                         // side-swept hairline, flat to the head
+  mesh(new THREE.BoxGeometry(.006,.05,.012),M(0x2a211c),[0,.15,.06],hair).rotation.x=.9;                                // center part
+  // arms (upper arm + elbow + forearm)
+  const arms=[-1,1].map(s=>{const sh=piv(root,s*.24,1.52,0);mesh(new THREE.CylinderGeometry(.05,.045,.3,12),skin,[0,-.15,0],sh);
+    const el=piv(sh,0,-.3,0);mesh(new THREE.CylinderGeometry(.045,.04,.3,12),skin,[0,-.15,0],el);mesh(new THREE.SphereGeometry(.045,10,8),skin,[0,-.31,0],el);
+    if(s<0)mesh(new THREE.CylinderGeometry(.052,.052,.025,12),M(0xcccccc,.2),[0,-.24,0],el);return{sh,el,s}});
+  // legs (thigh + knee + shin + shoe)
+  const legs=[-1,1].map(s=>{const hip=piv(root,s*.08,HIP_Y,0);mesh(new THREE.CylinderGeometry(.055,.048,THIGH,12),skin,[0,-THIGH/2,0],hip);
+    const kn=piv(hip,0,-THIGH,0);mesh(new THREE.CylinderGeometry(.048,.04,SHIN,12),skin,[0,-SHIN/2,0],kn);
+    const shoe=mesh(new THREE.BoxGeometry(.09,.06,.24),shoeM,[0,-SHIN-.01,.06],kn);return{hip,kn,shoe,s}});
+  root.userData={skirt,head,hair,arms,legs};return root}
+
+function setPose(r,k){const u=r.userData;
+  u.legs.forEach(l=>{l.hip.rotation.x=-Math.PI/2*k;l.hip.rotation.y=l.s*.07*k;l.kn.rotation.x=Math.PI/2*k});
+  u.arms.forEach(a=>{a.sh.rotation.x=-.2*k;a.sh.rotation.z=a.s*(.06-.03*k);a.el.rotation.x=-.7*k}); // hands end up resting on the lap
+  r.position.set(0,SIT_DY*k,STAND_Z+(SLOT_Z-STAND_Z)*k);u.skirt.setBlend(k)}
+
+/* ---------- scene ---------- */
+const scene=new THREE.Scene(),cam=new THREE.PerspectiveCamera(35,1,.1,50),ren=new THREE.WebGLRenderer({antialias:true});
+ren.setPixelRatio(Math.min(devicePixelRatio,2));document.body.prepend(ren.domElement);
+scene.background=new THREE.Color(matchMedia('(prefers-color-scheme:dark)').matches?0x241c20:0xf3e9dc);
+scene.add(new THREE.HemisphereLight(0xfff4f4,0xb89c8c,.95));const sun=new THREE.DirectionalLight(0xffffff,.8);sun.position.set(3,5,4);scene.add(sun);
+const floor=mesh(new THREE.CircleGeometry(3,48),M(0xe8d8c4,1),[0,0,0],scene);floor.rotation.x=-Math.PI/2;
+const wood=M(0x7a5232,.8),bench=new THREE.Group();scene.add(bench);   // bench: seat top y=.46, seat z from -.30 to +.25, backrest face at z=-.32
+mesh(new THREE.BoxGeometry(1.4,.08,.55),wood,[0,SEAT_TOP-.04,-.025],bench);mesh(new THREE.BoxGeometry(1.4,.55,.08),wood,[0,SEAT_TOP+.27,-.36],bench);
+[-.6,.6].forEach(x=>mesh(new THREE.BoxGeometry(.1,SEAT_TOP-.08,.45),M(0x5a3a22,.9),[x,(SEAT_TOP-.08)/2,-.03],bench));
+const R=buildResha();scene.add(R);let k=0,target=0;setPose(R,0);
+
+/* ---------- checks shown on screen (use the same numbers as tests in the real game) ---------- */
+const hud=document.getElementById('hud');
+function checks(){const P=R.userData.skirt.geometry.attributes.position;let minY=9;
+  for(let i=0;i<P.count;i++){const wz=P.getZ(i)+R.position.z,wy=P.getY(i)+R.position.y;if(wz>-.30&&wz<.25&&wy>.3&&wy<.9)minY=Math.min(minY,wy)}
+  const box=new THREE.Box3();R.userData.legs.forEach(l=>box.expandByObject(l.shoe));const pelvis=HIP_Y+R.position.y;
+  hud.innerHTML=`blend ${k.toFixed(2)}<br>pelvis y ${pelvis.toFixed(3)} (seat top+.06 = ${(SEAT_TOP+.06).toFixed(3)})<br>shoe sole y ${box.min.y.toFixed(3)} (floor = 0)<br>skirt min y over seat ${minY>8?'n/a':minY.toFixed(3)} (must be ≥ ${SEAT_TOP})`}
+
+/* ---------- controls ---------- */
+const sl=document.getElementById('sl');let manual=false;
+document.getElementById('bSit').onclick=()=>{manual=false;target=1};document.getElementById('bStand').onclick=()=>{manual=false;target=0};
+sl.oninput=()=>{manual=true;k=target=+sl.value;kk=k;setPose(R,k)};
+const V={'3q':[.8,.25],side:[1.57,.12],front:[0,.15],back:[3.14,.2]};let az=.8,el=.25,dist=4.2,drag=null;
+document.querySelectorAll('[data-v]').forEach(b=>b.onclick=()=>{[az,el]=V[b.dataset.v]});
+ren.domElement.addEventListener('pointerdown',e=>drag=[e.clientX,e.clientY]);addEventListener('pointerup',()=>drag=null);
+addEventListener('pointermove',e=>{if(drag){az-=(e.clientX-drag[0])*.008;el=Math.max(-.1,Math.min(1.2,el+(e.clientY-drag[1])*.006));drag=[e.clientX,e.clientY]}});
+addEventListener('wheel',e=>dist=Math.max(2.5,Math.min(8,dist+e.deltaY*.004)));
+function size(){ren.setSize(innerWidth,innerHeight);cam.aspect=innerWidth/innerHeight;cam.position.z=0;cam.updateProjectionMatrix()}addEventListener('resize',size);size();
+const ease=t=>t<.5?2*t*t:1-Math.pow(-2*t+2,2)/2;let kk=0;
+(function loop(){requestAnimationFrame(loop);
+  if(!manual){const d=target-kk;if(Math.abs(d)>.001)kk+=Math.sign(d)*Math.min(Math.abs(d),.017/.6);else kk=target;k=ease(kk);setPose(R,k);sl.value=k}
+  const d=innerWidth/innerHeight<.8?dist*1.5:dist;cam.position.set(Math.sin(az)*Math.cos(el)*d,.9+Math.sin(el)*d,Math.cos(az)*Math.cos(el)*d);cam.lookAt(0,.85,.1);
+  checks();ren.render(scene,cam)})();
+</script>
+</body>
+</html>

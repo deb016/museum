@@ -1,0 +1,296 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Couple Interactions – Reference</title>
+<style>
+:root{--bg:#f3e9dc;--ink:#3b2a2f;--card:rgba(255,255,255,.88);--acc:#c9607a;color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#241c20;--ink:#f6e8ec;--card:rgba(50,36,44,.88);--acc:#f08aa2;color-scheme:dark}}
+:root[data-theme="dark"]{--bg:#241c20;--ink:#f6e8ec;--card:rgba(50,36,44,.88);--acc:#f08aa2;color-scheme:dark}
+html,body{height:100%;margin:0;overflow:hidden;background:var(--bg);color:var(--ink);font-family:system-ui,-apple-system,Segoe UI,sans-serif;touch-action:none;-webkit-user-select:none;user-select:none}
+canvas{position:fixed;inset:0;width:100%;height:100%}
+#hud{position:fixed;left:8px;top:calc(env(safe-area-inset-top,0px) + 6px);font:11px/1.45 ui-monospace,Menlo,monospace;background:var(--card);padding:6px 9px;border-radius:10px;max-width:62vw;max-height:36vh;overflow:auto;white-space:pre-wrap}
+#ui{position:fixed;left:0;right:0;bottom:env(safe-area-inset-bottom,0px);padding:8px;display:flex;flex-direction:column;gap:6px;align-items:center}
+.row{display:flex;flex-wrap:wrap;gap:6px;justify-content:center}
+button{font:inherit;font-size:13px;border:0;border-radius:999px;padding:9px 13px;min-height:40px;background:var(--card);color:var(--ink);cursor:pointer}
+button.on,button.p{background:var(--acc);color:#fff}button:disabled{opacity:.4}
+#prompt,#msg{background:var(--card);padding:8px 12px;border-radius:14px;font-size:13px}
+#dpad{position:fixed;left:10px;bottom:calc(env(safe-area-inset-bottom,0px) + 150px);display:grid;grid-template-columns:repeat(3,46px);gap:4px}
+#dpad button{padding:0;min-height:46px;border-radius:12px}
+</style>
+</head>
+<body>
+<div id="hud"></div>
+<div id="dpad"><span></span><button data-d="0,1">▲</button><span></span><button data-d="-1,0">◀</button><button data-d="0,-1">▼</button><button data-d="1,0">▶</button></div>
+<div id="ui">
+<div id="msg"></div><div id="prompt" hidden><span id="ptxt"></span> <button class="p" id="bAcc">Accept</button> <button id="bDec">Decline</button></div>
+<div class="row" id="who"><button data-w="0" class="on">I am Dave Rey</button><button data-w="1">I am Resha</button></div>
+<div class="row" id="acts">
+<button data-a="hold">Hold hands</button><button data-a="hug">Hug</button><button data-a="kissC">Cheek kiss</button><button data-a="kissF">Forehead kiss</button><button data-a="piggy">Piggyback</button><button data-a="slow">Slow dance</button><button data-a="happy">Happy dance</button>
+</div>
+<div class="row"><button id="bStop" hidden>Stop / Let go</button><button id="bDown" hidden>Get down</button><label style="font-size:12px"><input type="checkbox" id="hm"> hug: hold mode</label><button id="bDis">Simulate disconnect</button><button id="bTest" class="p">Run self-test</button></div>
+</div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+/* ============================================================================================
+   COUPLE INTERACTIONS – REFERENCE IMPLEMENTATION (hold hands, hug, kiss, piggyback, dance)
+   Key ideas (port these into the real game):
+   1) The pose of EVERY character is rebuilt from scratch EVERY frame (restPose -> locomotion -> interaction -> IK).
+      Nothing is "left over", so there is no stuck hug, no tilted character after getting down, no leaked offsets.
+   2) The leader's transform is the source of truth. The follower's transform is computed from the leader + a shared clock.
+   3) Arms use two-bone IK toward world-space attach points. Kisses use a small CCD solver on spine + head.
+   4) All numbers live in CFG. Heights come from CFG.height (Resha = 0.92 uniform scale).
+   Conventions: characters face +Z, yaw rotates +Z toward +X, a character's LEFT is local +X, RIGHT is local -X.
+   ============================================================================================ */
+const CFG={height:{dave:1,resha:.92},reqDist:2,reqTimeout:10,align:.5,ending:.5,watchdog:1.5,speed:1.4,
+  hold:{gap:.55,handY:.98},
+  hug:{dist:.40,lean:.18,hold:2.5,backY:.30,backX:.15,backZ:-.14},
+  kiss:{dist:.34,gap:.025,dur:1.5,toe:.10,bow:.24,bowHead:.5},
+  piggy:{speedMul:.7,lean:.2,seatY:-.10,seatZ:-.30,spread:.6,hip:-1.25,knee:1.45},
+  slow:{dist:.36,period:4,lean:.15,handsY:1.25,side:.46},
+  happy:{dist:.9,period:2}};
+const V3=THREE.Vector3,Q4=THREE.Quaternion,DOWN=new V3(0,-1,0);
+const M=(c,r,ds)=>new THREE.MeshStandardMaterial({color:c,roughness:r==null?.7:r,side:ds?THREE.DoubleSide:THREE.FrontSide});
+const mesh=(g,m,p,par)=>{const o=new THREE.Mesh(g,m);if(p)o.position.set(p[0],p[1],p[2]);if(par)par.add(o);return o};
+const piv=(par,x,y,z)=>{const g=new THREE.Group();g.position.set(x,y,z||0);par.add(g);return g};
+const pt=(par,x,y,z)=>piv(par,x,y,z);
+const ease=t=>t<.5?2*t*t:1-Math.pow(-2*t+2,2)/2,lerp=(a,b,t)=>a+(b-a)*t,clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
+const angDiff=(a,b)=>{let d=b-a;while(d>Math.PI)d-=2*Math.PI;while(d<-Math.PI)d+=2*Math.PI;return d};
+const rot=(th,x,z)=>[x*Math.cos(th)+z*Math.sin(th),-x*Math.sin(th)+z*Math.cos(th)];   // local offset -> world offset for yaw th
+
+/* ---------- character rig (simplified look; keep your real meshes and just keep this joint layout) ---------- */
+function mkRig(name){
+  const dave=name==='Dave Rey',s=dave?CFG.height.dave:CFG.height.resha;
+  const P=dave?{hipY:1.0,shY:1.54,shX:.3,headY:1.72,hr:.15,thigh:.5,shin:.46,hipX:.1,lr:.12,skin:0xc48a64}
+              :{hipY:.92,shY:1.52,shX:.24,headY:1.8,hr:.14,thigh:.46,shin:.44,hipX:.08,lr:.05,skin:0xd9a883};
+  const root=new THREE.Group();root.scale.setScalar(s);
+  const skin=M(P.skin),hairM=M(dave?0x1b1514:0x15100d,.6,true),spine=piv(root,0,P.hipY,0);
+  const r={name,dave,s,P,root,spine,state:'FREE',yaw:0,walkPh:0,arms:[],legs:[],ikErr:0};
+  if(dave){mesh(new THREE.BoxGeometry(.52,.6,.3),M(0xa9c1dc),[0,1.3-P.hipY,0],spine);mesh(new THREE.BoxGeometry(.2,.6,.01),M(0xf5f5f2),[0,1.3-P.hipY,.155],spine)}
+  else{mesh(new THREE.CylinderGeometry(.17,.15,.38,20),M(0xf4eddb,.6),[0,1.38-P.hipY,0],spine);
+    r.skirt=piv(root,0,P.hipY,0);mesh(new THREE.CylinderGeometry(.15,.5,.88,24,1,true),M(0xf4eddb,.6,true),[0,-.12,0],r.skirt)} // placeholder: use the morphing skirt from Resha_Sit_Reference.html
+  const head=r.head=piv(spine,0,P.headY-P.hipY,0);mesh(new THREE.SphereGeometry(P.hr,20,16),skin,[0,0,0],head);
+  r.eyes=[-1,1].map(x=>mesh(new THREE.SphereGeometry(.018,8,8),M(0x1a1210),[x*.05,.02,P.hr*.93],head));
+  if(dave){for(let i=0;i<18;i++){const a=Math.random()*6.28,e=Math.random()*1.1;mesh(new THREE.SphereGeometry(.1,8,8),hairM,[Math.cos(a)*Math.sin(e)*.28,Math.cos(e)*.28+.04,Math.sin(a)*Math.sin(e)*.28-.02],head)}}
+  else{mesh(new THREE.SphereGeometry(.156,24,16,0,6.283,0,1.2),hairM,[0,.005,-.01],head);mesh(new THREE.SphereGeometry(.153,24,16,Math.PI*.9,Math.PI*1.4,0,2.5),hairM,[0,0,-.005],head);
+    mesh(new THREE.CylinderGeometry(.15,.2,.7,24,1,true,Math.PI*.3,Math.PI*1.4),hairM,[0,-.28,-.05],head);
+    [-1,1].forEach(x=>{const st=mesh(new THREE.CylinderGeometry(.045,.03,.56,10),hairM,[x*.145,-.27,.075],head);st.scale.z=.55})}
+  r.pts={lips:pt(head,0,-.06,P.hr+.005),forehead:pt(head,0,.075,P.hr-.005),cheekL:pt(head,.095,-.03,P.hr-.045),cheekR:pt(head,-.095,-.03,P.hr-.045),
+    shL:pt(spine,P.shX,P.shY-P.hipY,0),shR:pt(spine,-P.shX,P.shY-P.hipY,0),
+    bkL:pt(spine,CFG.hug.backX,CFG.hug.backY,CFG.hug.backZ),bkR:pt(spine,-CFG.hug.backX,CFG.hug.backY,CFG.hug.backZ),
+    waistL:pt(spine,.19,.2,0),seat:pt(spine,0,CFG.piggy.seatY,CFG.piggy.seatZ),chestL:pt(spine,.1,.5,.17),chestR:pt(spine,-.1,.5,.17)};
+  [1,-1].forEach(side=>{const sh=piv(spine,side*P.shX,P.shY-P.hipY,0);
+    mesh(new THREE.CylinderGeometry(.05,.045,.3,10),dave?M(0xa9c1dc):skin,[0,-.15,0],sh);
+    const el=piv(sh,0,-.3,0);mesh(new THREE.CylinderGeometry(.045,.04,.3,10),skin,[0,-.15,0],el);mesh(new THREE.SphereGeometry(.045,8,8),skin,[0,-.31,0],el);
+    r.arms.push({sh,el,side,hand:pt(el,0,-.32,0)})});
+  [1,-1].forEach(side=>{const hip=piv(root,side*P.hipX,P.hipY,0);hip.rotation.order='YXZ';
+    mesh(new THREE.CylinderGeometry(P.lr,P.lr*.9,P.thigh,10),dave?M(0x4b4d55):skin,[0,-P.thigh/2,0],hip);
+    const kn=piv(hip,0,-P.thigh,0);mesh(new THREE.CylinderGeometry(P.lr*.9,P.lr*.8,P.shin,10),dave?M(0x4b4d55):skin,[0,-P.shin/2,0],kn);
+    mesh(new THREE.BoxGeometry(.09,.06,.24),M(dave?0x4a2218:0xe8dcc4,.4),[0,-P.shin-.01,.06],kn);
+    r.legs.push({hip,kn,side})});
+  return r}
+
+/* ---------- per-frame pose reset (this is what prevents "stuck" poses after any interaction) ---------- */
+function restPose(r){r.root.rotation.set(0,r.yaw,0);r.root.position.y=0;r.spine.rotation.set(0,0,0);r.spine.position.y=r.P.hipY;r.head.rotation.set(0,0,0);
+  r.arms.forEach(a=>{a.sh.rotation.set(0,0,a.side*.06);a.el.rotation.set(0,0,0)});
+  r.legs.forEach(l=>{l.hip.rotation.set(0,0,0);l.kn.rotation.set(0,0,0)});
+  if(r.skirt){r.skirt.rotation.set(0,0,0);r.skirt.scale.set(1,1,1)}
+  r.eyes.forEach(e=>e.scale.set(1,1,1));r.ikErr=0}
+function walkAnim(r,ph,amp,freeArms){r.legs.forEach(l=>l.hip.rotation.x=Math.sin(ph+(l.side>0?0:Math.PI))*.6*amp);
+  if(freeArms)r.arms.forEach(a=>{if(freeArms.includes(a.side))a.sh.rotation.x=-Math.sin(ph+(a.side>0?0:Math.PI))*.5*amp});
+  r.root.position.y+=Math.abs(Math.sin(ph))*.03*amp*r.s;r.spine.rotation.x+=.04*amp}
+
+/* ---------- two-bone IK: put the hand on a world-space target, elbow bends toward `pole` ---------- */
+const _S=new V3();
+function ik(r,arm,target,pole,w){
+  if(w<=0)return;r.root.updateMatrixWorld(true);
+  const S=arm.sh.getWorldPosition(_S).clone(),L1=.3*r.s,L2=.32*r.s,D=target.clone().sub(S);let d=D.length();const dn=D.clone().divideScalar(d||1);d=clamp(d,.05,L1+L2-.002);
+  const a=(L1*L1-L2*L2+d*d)/(2*d),h=Math.sqrt(Math.max(L1*L1-a*a,0)),Pv=pole.clone().sub(dn.clone().multiplyScalar(pole.dot(dn))).normalize();
+  const E=S.clone().add(dn.clone().multiplyScalar(a)).add(Pv.multiplyScalar(h)),T=S.clone().add(dn.clone().multiplyScalar(d));
+  const pq=arm.sh.parent.getWorldQuaternion(new Q4()),qs=pq.clone().invert().multiply(new Q4().setFromUnitVectors(DOWN,E.clone().sub(S).normalize()));
+  arm.sh.quaternion.slerp(qs,w);arm.sh.updateMatrixWorld(true);
+  const sq=arm.sh.getWorldQuaternion(new Q4()),qe=sq.invert().multiply(new Q4().setFromUnitVectors(DOWN,T.clone().sub(E).normalize()));
+  arm.el.quaternion.slerp(qe,w);arm.el.updateMatrixWorld(true);
+  if(w>.99)r.ikErr=Math.max(r.ikErr,arm.hand.getWorldPosition(new V3()).distanceTo(target))}
+const W=(o)=>o.getWorldPosition(new V3());
+const outward=(r,arm)=>{const v=W(arm.sh).sub(W(r.root));v.y=0;return v.normalize().multiplyScalar(1).add(new V3(0,-.6,0))};
+const handTo=(r,side,target,w)=>{const arm=r.arms.find(a=>a.side===side);ik(r,arm,target,outward(r,arm),w)};
+const upd=r=>r.root.updateMatrixWorld(true);
+
+/* ---------- scene ---------- */
+const rigs=[mkRig('Dave Rey'),mkRig('Resha')],[dave,resha]=rigs;
+const other=r=>r===dave?resha:dave;
+dave.root.position.set(-.5,0,0);resha.root.position.set(.5,0,0);
+let act=null,req=null,you=dave,clock=0;const inp={x:0,y:0},keys={};let az=.6,el=.35,dist=5;
+
+/* ---------- state machine: FREE, REQUESTING, WAITING, ALIGNING, ACTIVE, ENDING ---------- */
+const flat=(a,b)=>Math.hypot(a.root.position.x-b.root.position.x,a.root.position.z-b.root.position.z);
+function canRequest(type,who){const o=other(who);
+  if(who.state!=='FREE'||o.state!=='FREE')return'Busy';
+  if(type==='piggy'&&who!==dave)return'Only Dave Rey can give a piggyback';
+  if(flat(who,o)>CFG.reqDist)return'Move closer';return null}
+function request(type,who){const e=canRequest(type,who);if(e){say(e);return false}
+  who.state='REQUESTING';other(who).state='WAITING';req={type,who,t:0};
+  const names={hold:'hold your hand',hug:'hug you',kissC:'kiss your cheek',kissF:'kiss your forehead',piggy:'give you a piggyback ride',slow:'slow dance with you',happy:'dance with you'};
+  ptxt.textContent=`${who.name} wants to ${names[type]} 💕`;prompt_.hidden=false;return true}
+function cancelReq(m){if(!req)return;req.who.state='FREE';other(req.who).state='FREE';req=null;prompt_.hidden=true;if(m)say(m)}
+function accept(){if(!req)return;const rq=req;req=null;prompt_.hidden=true;startAlign(rq)}
+function startAlign(rq){const L=rq.who,F=other(L),type=rq.type;
+  act={type,L,F,phase:'ALIGNING',t:0,clock:0,tEnd:0,fromL:{x:L.root.position.x,z:L.root.position.z,yaw:L.yaw},fromF:{x:F.root.position.x,z:F.root.position.z,yaw:F.yaw}};
+  const lx=L.root.position.x,lz=L.root.position.z,fx=F.root.position.x,fz=F.root.position.z;
+  act.C={x:(lx+fx)/2,z:(lz+fz)/2};const toF=Math.atan2(fx-lx,fz-lz);
+  if(type==='hold')act.th=L.yaw;
+  else if(type==='piggy')act.th=toF+Math.PI;                 // Dave turns his back toward Resha
+  else if(type==='kissC'||type==='kissF'){act.th=Math.atan2(lx-fx,lz-fz);act.C={x:fx,z:fz}} // receiver stays; th = direction receiver -> kisser
+  else act.th=toF;
+  act.th0=act.th;L.state=F.state='ALIGNING'}
+function endAct(by){if(!act||act.phase==='ENDING')return;
+  if(act.type==='piggy'&&by&&by!==resha)return say('Only Resha can get down');           // Dave can never release her
+  act.phase='ENDING';act.t=0;act.tEnd=0;act.L.state=act.F.state='ENDING';
+  act.endFrom={L:{x:act.L.root.position.x,z:act.L.root.position.z,yaw:act.L.yaw},F:{x:act.F.root.position.x,z:act.F.root.position.z,yaw:act.F.yaw}};
+  const L=act.L,F=act.F;let lx=L.root.position.x,lz=L.root.position.z,fx=F.root.position.x,fz=F.root.position.z;
+  if(act.type==='piggy'){const o=rot(L.yaw,.7,-.7);act.endTo={L:{x:lx,z:lz,yaw:L.yaw},F:{x:lx+o[0],z:lz+o[1],yaw:L.yaw}};}
+  else{let dx=fx-lx,dz=fz-lz,d=Math.hypot(dx,dz);if(d<.01){dx=0;dz=1;d=1}const mx=(lx+fx)/2,mz=(lz+fz)/2,half=Math.max(d,.9)/2;
+    act.endTo={L:{x:mx-dx/d*half,z:mz-dz/d*half,yaw:L.yaw},F:{x:mx+dx/d*half,z:mz+dz/d*half,yaw:F.yaw}}}}
+function finish(){const a=act;if(!a)return;[['L','endTo'],['F','endTo']].forEach(([k])=>{const r=a[k],t=a.endTo[k];r.root.position.x=t.x;r.root.position.z=t.z;r.yaw=t.yaw;r.state='FREE'});act=null;showBtns()}
+function disconnect(){if(act&&act.phase!=='ENDING')endAct(act.F);else if(req)cancelReq('Partner disconnected')}  // partner vanished: release cleanly
+
+/* ---------- target poses (leader source of truth) ---------- */
+function poseAt(a){const C=a.C,th=a.th,t=a.type,g=CFG;let d,L,F;
+  if(t==='hold'){const h=g.hold.gap/2,l=rot(th,h,0),f=rot(th,-h,0);return{L:{x:C.x+l[0],z:C.z+l[1],yaw:th},F:{x:C.x+f[0],z:C.z+f[1],yaw:th}}}
+  if(t==='kissC'||t==='kissF'){const cx=t==='kissC'?.1*a.F.s:0,o=rot(th,cx,g.kiss.dist);return{L:{x:C.x+o[0],z:C.z+o[1],yaw:th+Math.PI},F:{x:C.x,z:C.z,yaw:th}}}
+  if(t==='piggy')return{L:{x:C.x,z:C.z,yaw:th},F:null};
+  d=t==='hug'?g.hug.dist:t==='slow'?g.slow.dist:g.happy.dist;const f=rot(th,0,d/2);
+  return{L:{x:C.x-f[0],z:C.z-f[1],yaw:th},F:{x:C.x+f[0],z:C.z+f[1],yaw:th+Math.PI}}}
+const place=(r,p)=>{r.root.position.x=p.x;r.root.position.z=p.z;r.yaw=p.yaw};
+const mixP=(a,b,k)=>({x:lerp(a.x,b.x,k),z:lerp(a.z,b.z,k),yaw:a.yaw+angDiff(a.yaw,b.yaw)*k});
+
+/* ---------- interactions (each gets w = 0..1 pose weight; w fades to 0 while ENDING) ---------- */
+const ACT={
+ hold(a,dt,mv,w){const L=a.L,F=a.F;if(a.phase==='ACTIVE'&&mv.len>.15){a.C.x+=mv.x*CFG.speed*dt;a.C.z+=mv.z*CFG.speed*dt;a.th+=clamp(angDiff(a.th,Math.atan2(mv.x,mv.z)),-14*dt,14*dt);L.walkPh+=CFG.speed*dt*5;a.moving=1}else a.moving=0;
+  const p=poseAt(a);place(L,p.L);place(F,p.F);restPose(L);restPose(F);
+  [L,F].forEach(r=>walkAnim(r,L.walkPh,a.moving*w,r===L?[1]:[-1]));upd(L);upd(F);
+  const M_=new V3(a.C.x,CFG.hold.handY,a.C.z);handTo(L,-1,M_,w);handTo(F,1,M_,w)},
+ hug(a,dt,mv,w){const L=a.L,F=a.F;const p=poseAt(a);place(L,p.L);place(F,p.F);restPose(L);restPose(F);
+  const lam=w,br=Math.sin(a.clock*3)*.01;
+  [L,F].forEach((r,i)=>{r.spine.rotation.x=CFG.hug.lean*lam;r.head.rotation.z=(i?-.15:.15)*lam;r.spine.position.y+=br});upd(L);upd(F);
+  handTo(L,1,W(F.pts.bkR),w);handTo(L,-1,W(F.pts.bkL),w);handTo(F,1,W(L.pts.bkR),w);handTo(F,-1,W(L.pts.bkL),w);
+  if(a.phase==='ACTIVE'&&!hm.checked&&a.t>CFG.hug.hold)endAct()},
+ kiss(a,dt,mv,w,forehead){const K=a.L,R=a.F;const p=poseAt(a);place(K,p.L);place(R,p.F);restPose(K);restPose(R);
+  const T=a.phase==='ACTIVE'?a.t:(a.phase==='ENDING'?1:0),lam=(T<.5?ease(T/.5):1)*w;
+  if(forehead&&R.dave){R.spine.rotation.x=CFG.kiss.bow*lam;R.head.rotation.x=CFG.kiss.bowHead*lam}   // taller partner bows
+  R.head.rotation.z=.12*lam;R.eyes.forEach(e=>e.scale.y=1-.9*lam);if(forehead&&!K.dave)K.root.position.y+=CFG.kiss.toe*lam;  // shorter kisser rises on toes
+  upd(K);upd(R);const target=W(forehead?R.pts.forehead:R.pts.cheekL);
+  let jh=K.head,js=K.spine;K.head.rotation.x=0;K.spine.rotation.x=0;
+  for(let it=0;it<12;it++){[[jh,-.6,.7],[js,0,.55]].forEach(([j,lo,hi])=>{upd(K);const jp=W(j),lp=W(K.pts.lips),dir=target.clone().sub(W(K.head)).normalize(),goal=target.clone().sub(dir.multiplyScalar(CFG.kiss.gap));
+    const ax=new V3(1,0,0).applyQuaternion(j.getWorldQuaternion(new Q4())),v1=lp.sub(jp),v2=goal.sub(jp);v1.sub(ax.clone().multiplyScalar(v1.dot(ax)));v2.sub(ax.clone().multiplyScalar(v2.dot(ax)));
+    const ang=Math.atan2(ax.dot(new V3().crossVectors(v1,v2)),v1.dot(v2));j.rotation.x=clamp(j.rotation.x+ang,lo,hi)})}
+  K.head.rotation.x*=lam;K.spine.rotation.x*=lam;upd(K);
+  a.kissGap=W(K.pts.lips).distanceTo(target);
+  handTo(K,1,W(R.pts.shR),.8*w);handTo(K,-1,W(R.pts.shL),.8*w);
+  if(a.phase==='ACTIVE'&&a.t>CFG.kiss.dur-CFG.ending)endAct()},
+ kissC(a,dt,mv,w){ACT.kiss(a,dt,mv,w,false)},kissF(a,dt,mv,w){ACT.kiss(a,dt,mv,w,true)},
+ piggy(a,dt,mv,w,m,anchor){const D=a.L,R=a.F,P=CFG.piggy;                       // m: 0 = on the ground (anchor), 1 = riding
+  if(a.phase==='ACTIVE'&&mv.len>.15){D.root.position.x+=mv.x*CFG.speed*P.speedMul*dt;D.root.position.z+=mv.z*CFG.speed*P.speedMul*dt;D.yaw+=clamp(angDiff(D.yaw,Math.atan2(mv.x,mv.z)),-14*dt,14*dt);D.walkPh+=CFG.speed*P.speedMul*dt*5;a.moving=1}
+  else if(a.phase==='ALIGNING')D.yaw+=angDiff(D.yaw,a.th)*Math.min(1,dt*10);else a.moving=a.phase==='ENDING'?0:0;
+  restPose(D);restPose(R);D.spine.rotation.x=P.lean*m;D.legs.forEach(l=>{l.hip.rotation.x=-.2*m;l.kn.rotation.x=.35*m});
+  walkAnim(D,D.walkPh,(a.moving||0)*.8*m);D.spine.rotation.x+=Math.sin(Math.PI*m)*.25;D.root.position.y-=Math.sin(Math.PI*m)*.15;upd(D);   // crouch while she mounts / dismounts
+  const seat=W(D.pts.seat),dq=D.spine.getWorldQuaternion(new Q4()),yq=new Q4().setFromAxisAngle(new V3(0,1,0),anchor.yaw);
+  const seatRoot=seat.clone().sub(new V3(0,R.P.hipY*R.s,0).applyQuaternion(dq)),from=new V3(anchor.x,0,anchor.z);
+  R.root.position.copy(from.lerp(seatRoot,m));R.root.position.y+=Math.sin(Math.PI*m)*.3;R.root.quaternion.copy(yq.clone().slerp(dq,m));
+  R.legs.forEach(l=>{l.hip.rotation.set(P.hip*m,l.side*P.spread*m,0);l.kn.rotation.x=P.knee*m});
+  if(R.skirt){R.skirt.rotation.x=-1.0*m;R.skirt.scale.set(1-.38*m,1-.25*m,1-.38*m)}                            // placeholder hike; use a straddle shape (C) of the morphing skirt in the real game
+  R.head.rotation.z=-.25*m;upd(R);
+  handTo(D,1,W(R.legs[0].kn).add(new V3(0,-.03,0)).lerp(W(R.legs[0].hip),.5),w);handTo(D,-1,W(R.legs[1].kn).add(new V3(0,-.03,0)).lerp(W(R.legs[1].hip),.5),w);
+  handTo(R,1,W(D.pts.chestL),w);handTo(R,-1,W(D.pts.chestR),w);
+  a.seatErr=W(R.legs[0].hip).add(W(R.legs[1].hip)).multiplyScalar(.5).distanceTo(seat)},
+ dance(a,dt,mv,w,style){const L=a.L,F=a.F,t=a.clock,pd=style==='slow'?CFG.slow.period:CFG.happy.period;
+  if(style==='slow'){a.th=a.th0+t*(Math.PI/2)/pd;const sw=Math.sin(2*Math.PI*t/pd)*.1*w,o=rot(a.th,sw,0);const C0=a.C,p=poseAt(a);
+    p.L.x+=o[0];p.L.z+=o[1];p.F.x+=o[0];p.F.z+=o[1];place(L,p.L);place(F,p.F);restPose(L);restPose(F);
+    const lam=w;[L,F].forEach(r=>{r.spine.rotation.x=CFG.slow.lean*lam;r.spine.rotation.z=Math.sin(2*Math.PI*t/pd)*.06*lam});upd(L);upd(F);
+    const mp=rot(a.th,CFG.slow.side,0),M_=new V3(a.C.x+o[0]+mp[0],CFG.slow.handsY,a.C.z+o[1]+mp[1]);
+    handTo(L,1,M_,w);handTo(F,-1,M_,w);handTo(L,-1,W(F.pts.waistL),w);handTo(F,1,W(L.pts.shR),w)}
+  else{const ph=2*Math.PI*t/pd,p=poseAt(a),sx=Math.sin(ph)*.25*w,spinK=ease(clamp((t/(2*pd)%1)*2-1,0,1)),o=rot(a.th,sx,0);
+    p.L.x+=o[0];p.L.z+=o[1];p.F.x-=o[0];p.F.z-=o[1];place(L,p.L);place(F,p.F);L.yaw+=2*Math.PI*spinK*w;F.yaw+=2*Math.PI*spinK*w;restPose(L);restPose(F);
+    [L,F].forEach(r=>{const up=Math.max(0,Math.sin(ph))*w;r.arms.forEach(x=>{x.sh.rotation.z=x.side*(.2+1.9*up)});r.legs.forEach(l=>l.hip.rotation.x=Math.sin(ph*2+(l.side>0?0:Math.PI))*.35*w);r.root.position.y+=Math.abs(Math.sin(ph))*.05*w*r.s;r.spine.rotation.z=Math.sin(ph)*.1*w});upd(L);upd(F)}},
+ slow(a,dt,mv,w){ACT.dance(a,dt,mv,w,'slow')},happy(a,dt,mv,w){ACT.dance(a,dt,mv,w,'happy')}
+};
+
+/* ---------- main update ---------- */
+function moveVec(){let x=inp.x+(keys.d||keys.ArrowRight?1:0)-(keys.a||keys.ArrowLeft?1:0),y=inp.y+(keys.w||keys.ArrowUp?1:0)-(keys.s||keys.ArrowDown?1:0);const l=Math.hypot(x,y);if(l>1){x/=l;y/=l}
+  const fx=-Math.sin(az),fz=-Math.cos(az),rx=Math.cos(az),rz=-Math.sin(az);return{x:fx*y+rx*x,z:fz*y+rz*x,len:Math.min(1,l)}}
+function tick(dt){clock+=dt;const mv=moveVec();
+  if(req){req.t+=dt;if(req.t>CFG.reqTimeout)cancelReq('Request timed out')}
+  if(!act){rigs.forEach(r=>restPose(r));const c=you;
+    if(c.state==='FREE'&&mv.len>.15){c.yaw+=clamp(angDiff(c.yaw,Math.atan2(mv.x,mv.z)),-14*dt,14*dt);c.root.position.x+=mv.x*CFG.speed*dt;c.root.position.z+=mv.z*CFG.speed*dt;c.walkPh+=CFG.speed*dt*5;rot0=1}else rot0=0;  // heading is kept when input stops
+    if(c.state==='FREE')walkAnim(c,c.walkPh,rot0);
+    if(rigs.every(r=>r.state==='FREE')){const dx=resha.root.position.x-dave.root.position.x,dz=resha.root.position.z-dave.root.position.z,d=Math.hypot(dx,dz);if(d<.5&&d>.001){const k=(.5-d)/2/d;dave.root.position.x-=dx*k;dave.root.position.z-=dz*k;resha.root.position.x+=dx*k;resha.root.position.z+=dz*k}}}
+  else{const a=act;a.clock+=dt;a.t+=dt;let w=1,m=1,anchor=a.fromF;
+    if(a.phase==='ALIGNING'){const k=ease(Math.min(a.t/CFG.align,1));w=m=k;anchor=a.fromF;
+      if(a.type!=='piggy'){const T=poseAt(a);place(a.L,mixP(a.fromL,T.L,k));if(T.F)place(a.F,mixP(a.fromF,T.F,k))}
+      if(a.t>=CFG.align){a.phase='ACTIVE';a.t=0;a.L.state=a.F.state='ACTIVE';showBtns()}}
+    else if(a.phase==='ENDING'){a.tEnd+=dt;const k=ease(Math.min(a.tEnd/CFG.ending,1));w=m=1-k;anchor=a.endTo.F;
+      if(a.type!=='piggy'){place(a.L,mixP(a.endFrom.L,a.endTo.L,k));place(a.F,mixP(a.endFrom.F,a.endTo.F,k))}}
+    const key=a.type==='kissC'?'kissC':a.type;
+    if(a.type==='piggy'&&a.phase==='ENDING'){ACT.piggy(a,dt,{len:0},w,m,a.endTo.F)}
+    else if(a.type==='piggy')ACT.piggy(a,dt,mv,w,m,anchor);
+    else{const hold=a.phase!=='ACTIVE'?(a.phase==='ENDING'?a.t:0):a.t;ACT[key](a,dt,a.phase==='ACTIVE'?mv:{len:0},w);}
+    if(a.phase==='ENDING'){if(a.type!=='piggy'){place(a.L,mixP(a.endFrom.L,a.endTo.L,ease(Math.min(a.tEnd/CFG.ending,1))));place(a.F,mixP(a.endFrom.F,a.endTo.F,ease(Math.min(a.tEnd/CFG.ending,1))))}
+      if(a.tEnd>=CFG.ending||a.tEnd>=CFG.watchdog)finish()}}
+}
+let rot0=0;
+
+/* ---------- UI ---------- */
+const $=id=>document.getElementById(id),hud=$('hud'),msg=$('msg'),prompt_=$('prompt'),ptxt=$('ptxt'),hm=$('hm'),bStop=$('bStop'),bDown=$('bDown');
+let msgT=0;function say(t){msg.textContent=t;msgT=2.5}
+function showBtns(){const on=act&&act.phase==='ACTIVE';bStop.hidden=!(on&&act.type!=='piggy'&&!/kiss/.test(act.type));bDown.hidden=!(on&&act.type==='piggy'&&you===resha);
+  if(on&&act.type==='piggy'&&you===dave)say('Carrying Resha 💕')}
+$('who').onclick=e=>{const b=e.target.closest('[data-w]');if(!b)return;you=rigs[+b.dataset.w];document.querySelectorAll('[data-w]').forEach(x=>x.classList.toggle('on',x===b));
+  $('acts').querySelector('[data-a=piggy]').disabled=you!==dave;showBtns()};
+$('acts').onclick=e=>{const b=e.target.closest('[data-a]');if(b)request(b.dataset.a,you)};
+$('bAcc').onclick=accept;$('bDec').onclick=()=>cancelReq('Declined');bStop.onclick=()=>endAct(you);bDown.onclick=()=>endAct(resha);$('bDis').onclick=disconnect;
+document.querySelectorAll('[data-d]').forEach(b=>{const[x,y]=b.dataset.d.split(',').map(Number);b.onpointerdown=()=>{inp.x=x;inp.y=y};b.onpointerup=b.onpointerleave=()=>{inp.x=inp.y=0}});
+addEventListener('keydown',e=>keys[e.key]=1);addEventListener('keyup',e=>keys[e.key]=0);
+
+/* ---------- self-test (same checks you should automate in the real game) ---------- */
+const LOG=[];const T_=(n,ok,i)=>LOG.push((ok?'PASS ':'FAIL ')+n+(i?'  ('+i+')':''));
+const adv=s=>{for(let i=0;i<Math.round(s*60);i++)tick(1/60)};
+function reset(){act=null;req=null;prompt_.hidden=true;rigs.forEach(r=>{r.state='FREE';r.yaw=0});dave.root.position.set(-.45,0,0);resha.root.position.set(.45,0,0);inp.x=inp.y=0;rot0=0;adv(.05)}
+function go(type,who,wait){reset();you=who;const ok=request(type,who);if(!ok)return false;accept();adv(CFG.align+(wait==null?.8:wait));return true}
+function stopAndCheck(n,by){endAct(by);adv(1.0);T_(n+': back to FREE within 1s',dave.state==='FREE'&&resha.state==='FREE'&&!act);T_(n+': apart after release',flat(dave,resha)>=.85,flat(dave,resha).toFixed(2)+' m')}
+function runTests(){LOG.length=0;
+  go('hold',dave,.6);T_('hold: hands on target <2cm',Math.max(dave.ikErr,resha.ikErr)<.02,(Math.max(dave.ikErr,resha.ikErr)*100).toFixed(1)+' cm');
+  inp.y=1;adv(2);inp.y=0;T_('hold: stays together while walking',Math.abs(flat(dave,resha)-CFG.hold.gap)<.05&&Math.max(dave.ikErr,resha.ikErr)<.02);stopAndCheck('hold',dave);
+  go('hug',dave,CFG.hug.hold*.5);T_('hug: hands on back <2cm',Math.max(dave.ikErr,resha.ikErr)<.02,(Math.max(dave.ikErr,resha.ikErr)*100).toFixed(1)+' cm');stopAndCheck('hug',resha);
+  [['kissC',dave],['kissC',resha],['kissF',dave],['kissF',resha]].forEach(([t,w])=>{go(t,w,.75);const g=act?act.kissGap:-1;T_(`${t} by ${w.name}: lip gap 1.5-7cm`,g>.015&&g<.07,(g*100).toFixed(1)+' cm');adv(1.2);T_(`${t} by ${w.name}: ended on its own`,!act&&dave.state==='FREE'&&resha.state==='FREE')});
+  T_('piggyback: Resha cannot request it',!request('piggy',resha));reset();
+  go('piggy',dave,.3);T_('piggy: riding',act&&act.phase==='ACTIVE');T_('piggy: Resha hips on his back <3cm',act&&act.seatErr<.03,act?(act.seatErr*100).toFixed(1)+' cm':'');
+  inp.y=1;adv(2);inp.y=0;T_('piggy: Dave walks, Resha stays on',act&&act.phase==='ACTIVE'&&act.seatErr<.03);endAct(dave);adv(.2);T_('piggy: Dave cannot release her',act&&act.phase==='ACTIVE');
+  endAct(resha);adv(1.0);T_('piggy: Resha got down, both FREE',!act&&dave.state==='FREE'&&resha.state==='FREE');T_('piggy: no leftover tilt',Math.abs(resha.root.rotation.x)<.001&&Math.abs(dave.spine.rotation.x)<.001);T_('piggy: apart after landing',flat(dave,resha)>=.85,flat(dave,resha).toFixed(2)+' m');
+  go('slow',dave,2);T_('slow dance: hands <3cm',Math.max(dave.ikErr,resha.ikErr)<.03,(Math.max(dave.ikErr,resha.ikErr)*100).toFixed(1)+' cm');stopAndCheck('slow dance',dave);
+  go('happy',resha,2);T_('happy dance: active',act&&act.phase==='ACTIVE');stopAndCheck('happy dance',resha);
+  go('hug',dave,.8);disconnect();adv(1.0);T_('disconnect mid-hug: both released',!act&&dave.state==='FREE'&&resha.state==='FREE');
+  reset();hud.textContent=LOG.join('\n');return LOG}
+
+/* ---------- render ---------- */
+const scene=new THREE.Scene(),cam=new THREE.PerspectiveCamera(38,1,.1,50),ren=new THREE.WebGLRenderer({antialias:true});
+ren.setPixelRatio(Math.min(devicePixelRatio,2));document.body.prepend(ren.domElement);
+scene.background=new THREE.Color(matchMedia('(prefers-color-scheme:dark)').matches?0x241c20:0xf3e9dc);
+scene.add(new THREE.HemisphereLight(0xfff4f4,0xb89c8c,.95));const sun=new THREE.DirectionalLight(0xffffff,.8);sun.position.set(3,5,4);scene.add(sun);
+const fl=mesh(new THREE.CircleGeometry(6,48),M(0xe8d8c4,1),[0,0,0],scene);fl.rotation.x=-Math.PI/2;rigs.forEach(r=>scene.add(r.root));
+function size(){ren.setSize(innerWidth,innerHeight);cam.aspect=innerWidth/innerHeight;cam.updateProjectionMatrix()}addEventListener('resize',size);size();
+let drag=null;ren.domElement.addEventListener('pointerdown',e=>drag=[e.clientX,e.clientY]);addEventListener('pointerup',()=>drag=null);
+addEventListener('pointermove',e=>{if(drag){az-=(e.clientX-drag[0])*.008;el=clamp(el+(e.clientY-drag[1])*.006,.05,1.2);drag=[e.clientX,e.clientY]}});
+addEventListener('wheel',e=>dist=clamp(dist+e.deltaY*.004,2.5,9));
+$('bTest').onclick=()=>runTests();
+let last=0;(function loop(t){requestAnimationFrame(loop);const dt=Math.min(.05,((t||0)-last)/1000||.016);last=t||0;tick(dt);
+  if(msgT>0){msgT-=dt;if(msgT<=0)msg.textContent=''}
+  const mx=(dave.root.position.x+resha.root.position.x)/2,mz=(dave.root.position.z+resha.root.position.z)/2,d=innerWidth/innerHeight<.8?dist*1.4:dist;
+  cam.position.set(mx+Math.sin(az)*Math.cos(el)*d,.9+Math.sin(el)*d,mz+Math.cos(az)*Math.cos(el)*d);cam.lookAt(mx,1,mz);
+  if(!LOG.length||act||req)hud.textContent=`you: ${you.name}\nDave: ${dave.state}  Resha: ${resha.state}\n${act?act.type+' / '+act.phase:'no interaction'}${act&&act.kissGap!=null?'\nlip gap '+(act.kissGap*100).toFixed(1)+' cm':''}${act&&act.seatErr!=null?'\nseat err '+(act.seatErr*100).toFixed(1)+' cm':''}\nhand IK err: ${(Math.max(dave.ikErr,resha.ikErr)*100).toFixed(1)} cm`;
+  ren.render(scene,cam)})(0);
+window.__api={tick,runTests,rigs,CFG};
+</script>
+</body>
+</html>

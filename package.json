@@ -1,0 +1,29 @@
+{
+  "name": "museum-walkthrough",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "predev": "npm run music",
+    "dev": "vite",
+    "prebuild": "npm run music",
+    "build": "vite build",
+    "preview": "vite preview",
+    "music": "node scripts/generate-playlist.mjs",
+    "test:e2e": "playwright test",
+    "qa:mobile": "playwright test e2e/mobile-smoke.spec.js e2e/world-interactions.spec.js e2e/debug-panels.spec.js",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "firebase": "^13.3.0",
+    "three": "^0.180.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.56.1",
+    "@tailwindcss/postcss": "^4.1.0",
+    "autoprefixer": "^10.4.0",
+    "postcss": "^8.5.0",
+    "tailwindcss": "^4.1.0",
+    "vite": "^7.1.0"
+  }
+}
